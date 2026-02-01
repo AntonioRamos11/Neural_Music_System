@@ -2,12 +2,17 @@
 from audio_analyzer import AudioAnalyzer
 from playlist_generator import CyclingPlaylistGenerator
 import pandas as pd
-
+from pathlib import Path
+#/home/pwn/Music/Musica xioami/Music
 def main():
     # === CONFIGURACIÓN ===
-    MUSIC_FOLDER = "./mis_canciones"  # 📁 Cambia esto a tu carpeta
+    MUSIC_FOLDER = "/home/pwn/Music/Musica xioami/Music"  # 📁 Cambia esto a tu carpeta
     WORKOUT_DURATION = 60  # minutos
     WORKOUT_TYPE = "endurance"  # "endurance", "intervals", "recovery"
+    
+    # Crear directorios si no existen
+    Path("csv").mkdir(exist_ok=True)
+    Path("playlists").mkdir(exist_ok=True)
     
     print("=" * 60)
     print("🎵 CYCLING MUSIC MIXER 🚴")
@@ -16,17 +21,41 @@ def main():
     # === PASO 1: Analizar canciones ===
     print("\n📊 PASO 1: Analizando tus canciones...\n")
     
-    analyzer = AudioAnalyzer(MUSIC_FOLDER)
-    songs_df = analyzer.analyze_folder()
+    analysis_file = "csv/song_analysis.csv"
     
-    if len(songs_df) == 0:
-        print("\n❌ No se encontraron canciones para analizar.")
-        print(f"   Verifica que la carpeta '{MUSIC_FOLDER}' contenga archivos MP3/WAV/FLAC")
-        return None
-    
-    # Guarda análisis para no repetir
-    songs_df.to_csv("song_analysis.csv", index=False)
-    print("\n💾 Análisis guardado en 'song_analysis.csv'")
+    # Verificar si ya existe análisis
+    if Path(analysis_file).exists():
+        print(f"💾 Cargando análisis existente desde '{analysis_file}'...")
+        songs_df = pd.read_csv(analysis_file)
+        print(f"✅ {len(songs_df)} canciones cargadas\n")
+        
+        # Verificar que tenga la columna filepath
+        if 'filepath' not in songs_df.columns:
+            print("⚠️  El análisis no tiene rutas completas")
+            print("   Ejecuta: python3 agregar_rutas.py")
+            return None
+        
+        # Filtrar canciones sin filepath
+        missing = songs_df['filepath'].isna().sum()
+        if missing > 0:
+            print(f"⚠️  {missing} canciones sin ruta (eliminadas)")
+            songs_df = songs_df[songs_df['filepath'].notna()].copy()
+            print(f"✅ {len(songs_df)} canciones disponibles\n")
+    else:
+        print("⚡ Usando procesamiento paralelo + caché para máxima velocidad\n")
+        
+        # El nuevo AudioAnalyzer usa caché y procesamiento paralelo automáticamente
+        analyzer = AudioAnalyzer(MUSIC_FOLDER, cache_file="csv/audio_cache.json")
+        songs_df = analyzer.analyze_folder()
+        
+        if len(songs_df) == 0:
+            print("\n❌ No se encontraron canciones para analizar.")
+            print(f"   Verifica que la carpeta '{MUSIC_FOLDER}' contenga archivos MP3/WAV/FLAC")
+            return None
+        
+        # Guarda análisis en carpeta csv/
+        songs_df.to_csv(analysis_file, index=False)
+        print(f"\n💾 Análisis guardado en '{analysis_file}'")
     
     # === PASO 2: Mostrar estadísticas ===
     print("\n📈 ESTADÍSTICAS DE TU BIBLIOTECA:")
@@ -80,12 +109,14 @@ def main():
     print(f"⏱️  Duración total: {total_duration:.1f} minutos")
     
     # === PASO 5: Guardar playlist ===
-    playlist.to_csv("workout_playlist.csv", index=False)
-    print("\n💾 Playlist guardada en 'workout_playlist.csv'")
+    playlist_csv = f"csv/playlist_{WORKOUT_TYPE}_{WORKOUT_DURATION}min.csv"
+    playlist.to_csv(playlist_csv, index=False)
+    print(f"\n💾 Playlist CSV guardada en '{playlist_csv}'")
     
     # === PASO 6: Generar archivo M3U (para reproductores) ===
-    generate_m3u(playlist, "workout_playlist.m3u", MUSIC_FOLDER)
-    print("💾 Archivo M3U guardado en 'workout_playlist.m3u'")
+    playlist_m3u = f"playlists/playlist_{WORKOUT_TYPE}_{WORKOUT_DURATION}min.m3u"
+    generate_m3u(playlist, playlist_m3u, MUSIC_FOLDER)
+    print(f"💾 Archivo M3U guardado en '{playlist_m3u}'")
     
     print("\n✅ ¡Listo! Ejecuta 'python visualize.py' para ver gráficos")
     
@@ -98,7 +129,8 @@ def generate_m3u(playlist: pd.DataFrame, output_file: str, music_folder: str):
         for _, song in playlist.iterrows():
             duration = int(song['duration'])
             f.write(f"#EXTINF:{duration},{song['title']}\n")
-            f.write(f"{music_folder}/{song['filename']}\n")
+            # Usar filepath (ruta completa) en lugar de music_folder + filename
+            f.write(f"{song['filepath']}\n")
 
 if __name__ == "__main__":
     playlist = main()

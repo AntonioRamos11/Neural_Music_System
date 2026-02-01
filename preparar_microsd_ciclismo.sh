@@ -47,7 +47,8 @@ fi
 
 DEVICE=$1
 MOUNT_POINT="/tmp/cycling_sd"
-MUSIC_SOURCE="/home/pwn/Music/Musica xioami/Music/bass english"
+PLAYLIST_DIR="playlists"
+CSV_DIR="csv"
 
 # Verificar que el dispositivo existe
 if [ ! -b "$DEVICE" ]; then
@@ -83,32 +84,41 @@ AVAILABLE_SPACE=$(df "$MOUNT_POINT" | tail -1 | awk '{print $4}')
 AVAILABLE_MB=$((AVAILABLE_SPACE / 1024))
 echo "   💾 Espacio disponible: ${AVAILABLE_MB} MB"
 
-echo -e "${CYAN}🔧 Paso 5: Creando estructura de carpetas...${NC}"
-mkdir -p "$MOUNT_POINT/01_Endurance"
-mkdir -p "$MOUNT_POINT/02_Intervals"
-mkdir -p "$MOUNT_POINT/03_Recovery"
+echo -e "${CYAN}🔧 Paso 5: Verificando playlists disponibles...${NC}"
 
-# Función para calcular tamaño de playlist
-get_playlist_size() {
-    local playlist_csv=$1
-    local total_size=0
-    
-    if [ ! -f "$playlist_csv" ]; then
-        echo 0
-        return
+# Listar playlists disponibles
+echo ""
+echo "Playlists disponibles:"
+AVAILABLE_PLAYLISTS=()
+counter=1
+for csv in "$CSV_DIR"/playlist_*.csv; do
+    if [ -f "$csv" ]; then
+        basename=$(basename "$csv" .csv)
+        name=$(echo "$basename" | sed 's/_/ /g' | sed 's/playlist //')
+        echo "  $counter. $name"
+        AVAILABLE_PLAYLISTS+=("$csv")
+        counter=$((counter + 1))
     fi
-    
-    while IFS=',' read -r filename rest; do
-        filename=$(echo "$filename" | sed 's/"//g')
-        source_file="$MUSIC_SOURCE/$filename"
-        if [ -f "$source_file" ]; then
-            size=$(stat -c%s "$source_file" 2>/dev/null || echo 0)
-            total_size=$((total_size + size))
-        fi
-    done < <(tail -n +2 "$playlist_csv")
-    
-    echo $total_size
-}
+done
+
+if [ ${#AVAILABLE_PLAYLISTS[@]} -eq 0 ]; then
+    echo -e "${RED}❌ No se encontraron playlists${NC}"
+    echo "   Ejecuta primero: python3 generar_multiples_playlists.py"
+    umount "$MOUNT_POINT" 2>/dev/null || true
+    exit 1
+fi
+
+echo ""
+echo -e "${YELLOW}Selecciona playlists a copiar (separadas por espacio, ej: 1 2 5)${NC}"
+echo -e "${YELLOW}O presiona ENTER para copiar las primeras 3${NC}"
+read -p "Selección: " selection
+
+if [ -z "$selection" ]; then
+    selection="1 2 3"
+fi
+
+echo ""
+echo -e "${CYAN}🔧 Paso 6: Creando estructura de carpetas...${NC}"
 
 # Función para copiar y renombrar canciones según playlist
 copy_playlist() {
@@ -123,32 +133,24 @@ copy_playlist() {
         return 1
     fi
     
-    # Verificar espacio antes de copiar
-    local available=$(df "$MOUNT_POINT" | tail -1 | awk '{print $4}')
-    local playlist_size=$(get_playlist_size "$playlist_csv")
-    local playlist_size_kb=$((playlist_size / 1024))
-    local playlist_size_mb=$((playlist_size_kb / 1024))
-    
-    echo "      📊 Tamaño: ${playlist_size_mb} MB"
-    
-    if [ $playlist_size_kb -gt $available ]; then
-        echo -e "${RED}      ❌ No hay espacio suficiente (faltan $((playlist_size_mb - available/1024)) MB)${NC}"
-        return 1
-    fi
-    
     local counter=1
     local copied=0
+    local failed=0
     
-    # Leer CSV y copiar canciones en orden
-    while IFS=',' read -r filename rest; do
-        # Limpiar comillas del filename
-        filename=$(echo "$filename" | sed 's/"//g')
-        source_file="$MUSIC_SOURCE/$filename"
+    # Leer CSV y copiar canciones con rutas completas desde la columna filepath
+    while IFS=',' read -r line; do
+        # Extraer filepath (segunda columna después de filename)
+        filepath=$(echo "$line" | cut -d',' -f2 | sed 's/"//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
-        if [ -f "$source_file" ]; then
+        # Saltar header y líneas vacías
+        if [[ "$filepath" == "filepath" ]] || [[ -z "$filepath" ]]; then
+            continue
+        fi
+        
+        if [ -f "$filepath" ]; then
             # Verificar espacio antes de cada copia
             available=$(df "$MOUNT_POINT" | tail -1 | awk '{print $4}')
-            file_size=$(stat -c%s "$source_file")
+            file_size=$(stat -c%s "$filepath")
             file_size_kb=$((file_size / 1024))
             
             if [ $file_size_kb -gt $available ]; then
@@ -156,47 +158,74 @@ copy_playlist() {
                 return 1
             fi
             
-            # Obtener nombre limpio (sin path, sin extensión)
-            base_name=$(basename "$filename" .m4a)
-            # Renombrar con número
-            dest_name=$(printf "%02d - %s.m4a" $counter "$base_name")
+            # Obtener nombre base del archivo
+            base_name=$(basename "$filepath")
+            name="${base_name%.*}"
+            ext="${base_name##*.}"
             
-            cp "$source_file" "$output_folder/$dest_name"
-            echo "      ✓ $counter. $base_name"
-            counter=$((counter + 1))
-            copied=$((copied + 1))
+            # Renombrar con número para ordenar
+            dest_name=$(printf "%02d - %s.%s" $counter "$name" "$ext")
+            
+            cp "$filepath" "$output_folder/$dest_name" 2>/dev/null
+            if [ $? -eq 0 ]; then
+                echo "      ✓ $counter. $name"
+                counter=$((counter + 1))
+                copied=$((copied + 1))
+            else
+                failed=$((failed + 1))
+            fi
         else
-            echo -e "${YELLOW}      ⚠️  No encontrado: $filename${NC}"
+            echo -e "${YELLOW}      ⚠️  No encontrado: $filepath${NC}"
+            failed=$((failed + 1))
         fi
-    done < <(tail -n +2 "$playlist_csv")
+    done < "$playlist_csv"
     
     echo -e "${GREEN}      ✅ $copied canciones copiadas${NC}"
+    if [ $failed -gt 0 ]; then
+        echo -e "${YELLOW}      ⚠️  $failed archivos no encontrados${NC}"
+    fi
+    
     return 0
 }
 
-echo -e "${CYAN}🔧 Paso 6: Copiando playlists...${NC}"
+echo -e "${CYAN}🔧 Paso 7: Copiando playlists seleccionadas...${NC}"
 echo ""
 
-# Intentar copiar playlists por prioridad
+# Convertir selección a array
+IFS=' ' read -ra SELECTED <<< "$selection"
+
 PLAYLISTS_COPIED=0
+FOLDER_NUM=1
 
-if copy_playlist "playlist_endurance_60min.csv" "$MOUNT_POINT/01_Endurance" "Endurance (60 min)"; then
-    PLAYLISTS_COPIED=$((PLAYLISTS_COPIED + 1))
-fi
-
-if copy_playlist "playlist_intervals_45min.csv" "$MOUNT_POINT/02_Intervals" "Intervals (45 min)"; then
-    PLAYLISTS_COPIED=$((PLAYLISTS_COPIED + 1))
-fi
-
-if copy_playlist "playlist_recovery_30min.csv" "$MOUNT_POINT/03_Recovery" "Recovery (30 min)"; then
-    PLAYLISTS_COPIED=$((PLAYLISTS_COPIED + 1))
-fi
+for idx in "${SELECTED[@]}"; do
+    # Validar índice
+    if [ "$idx" -lt 1 ] || [ "$idx" -gt "${#AVAILABLE_PLAYLISTS[@]}" ]; then
+        echo -e "${YELLOW}⚠️  Índice inválido: $idx (ignorado)${NC}"
+        continue
+    fi
+    
+    # Obtener playlist CSV
+    playlist_idx=$((idx - 1))
+    playlist_csv="${AVAILABLE_PLAYLISTS[$playlist_idx]}"
+    
+    # Crear nombre de carpeta
+    basename=$(basename "$playlist_csv" .csv)
+    clean_name=$(echo "$basename" | sed 's/playlist_//' | sed 's/_/ /g')
+    folder_name=$(printf "%02d_%s" $FOLDER_NUM "$(echo $basename | sed 's/playlist_//')")
+    
+    # Crear carpeta
+    mkdir -p "$MOUNT_POINT/$folder_name"
+    
+    # Copiar playlist
+    if copy_playlist "$playlist_csv" "$MOUNT_POINT/$folder_name" "$clean_name"; then
+        PLAYLISTS_COPIED=$((PLAYLISTS_COPIED + 1))
+        FOLDER_NUM=$((FOLDER_NUM + 1))
+    fi
+done
 
 echo ""
-if [ $PLAYLISTS_COPIED -eq 3 ]; then
-    echo -e "${GREEN}✅ Las 3 playlists copiadas exitosamente${NC}"
-elif [ $PLAYLISTS_COPIED -gt 0 ]; then
-    echo -e "${YELLOW}⚠️  Solo se copiaron $PLAYLISTS_COPIED de 3 playlists (espacio insuficiente)${NC}"
+if [ $PLAYLISTS_COPIED -gt 0 ]; then
+    echo -e "${GREEN}✅ $PLAYLISTS_COPIED playlists copiadas exitosamente${NC}"
 else
     echo -e "${RED}❌ No se pudo copiar ninguna playlist${NC}"
     umount "$MOUNT_POINT"
@@ -205,7 +234,7 @@ else
 fi
 
 echo ""
-echo -e "${CYAN}🔧 Paso 7: Mostrando espacio final...${NC}"
+echo -e "${CYAN}🔧 Paso 8: Mostrando espacio final...${NC}"
 FINAL_SPACE=$(df "$MOUNT_POINT" | tail -1 | awk '{print $4}')
 FINAL_MB=$((FINAL_SPACE / 1024))
 USED_MB=$((AVAILABLE_MB - FINAL_MB))
@@ -213,25 +242,29 @@ echo "   💾 Espacio usado: ${USED_MB} MB"
 echo "   💾 Espacio restante: ${FINAL_MB} MB"
 
 echo ""
-echo -e "${CYAN}🔧 Paso 8: Sincronizando...${NC}"
+echo -e "${CYAN}🔧 Paso 9: Sincronizando...${NC}"
 sync
 
-echo -e "${CYAN}🔧 Paso 9: Desmontando de forma segura...${NC}"
+echo -e "${CYAN}🔧 Paso 10: Desmontando de forma segura...${NC}"
 umount "$MOUNT_POINT"
 rmdir "$MOUNT_POINT"
 
 echo ""
 echo -e "${GREEN}${BOLD}✅ ¡MicroSD lista para usar!${NC}\n"
 echo -e "${BOLD}Estructura creada:${NC}"
-echo "  📂 01_Endurance/ - 19 canciones (~71 min)"
-echo "  📂 02_Intervals/ - 18 canciones (~62 min)"
-echo "  📂 03_Recovery/  - 10 canciones (~37 min)"
+for folder in "$MOUNT_POINT"/*; do
+    if [ -d "$folder" ]; then
+        folder_name=$(basename "$folder")
+        song_count=$(ls "$folder" 2>/dev/null | wc -l)
+        echo "  📂 $folder_name/ - $song_count canciones"
+    fi
+done 2>/dev/null || echo "  (microSD ya desmontada)"
 echo ""
 echo -e "${CYAN}💡 Cómo usar:${NC}"
-echo "  1. Inserta la microSD en tu bocina"
-echo "  2. Selecciona modo 'SD Card' o 'AUX'"
-echo "  3. Usa los controles de carpeta (si tiene) para cambiar entre playlists"
-echo "  4. O simplemente reproduce - empezará con 01_Endurance"
+echo "  1. Inserta la microSD en tu bocina/reproductor"
+echo "  2. Selecciona modo 'SD Card' o 'Tarjeta'"
+echo "  3. Usa los controles de carpeta para cambiar entre playlists"
+echo "  4. Cada carpeta está numerada para fácil navegación"
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════════╗"
 echo "║         🎉 LISTO PARA TU ENTRENAMIENTO 🚴                       ║"
