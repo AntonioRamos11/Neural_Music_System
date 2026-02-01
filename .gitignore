@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Archivos de música
+mis_canciones/*.mp3
+mis_canciones/*.MP3
+mis_canciones/*.wav
+mis_canciones/*.flac
+mis_canciones/*.m4a
+
+# Archivos generados
+song_analysis.csv
+workout_playlist.csv
+workout_playlist.m3u
+playlist_visualization.png
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
